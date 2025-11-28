@@ -5,64 +5,29 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
-/**
- * Utility class for working with time conversions, formatting, and Minecraft-style time expressions.
- * Implemented as a singleton.
- */
-public class Time {
+public final class Time {
 
-    private static Time instance = null;
+    private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    /**
-     * Returns the singleton instance of the {@code Time} utility class.
-     *
-     * @return the singleton {@code Time} instance.
-     */
-    public static Time getInstance() {
-        if (instance == null) {
-            instance = new Time();
-        }
-        return instance;
-    }
-
-    /**
-     * Private constructor to enforce singleton pattern.
-     */
-    private Time() {
-    }
-
-    /**
-     * Formats the given time in milliseconds into a human-readable duration string (e.g., "1h 20m 15s").
-     *
-     * @param millis Time duration in milliseconds.
-     * @return A formatted duration string.
-     */
-    public String strftime(long millis) {
+    public static String formatDuration(long millis) {
         long seconds = millis / 1000;
         long hours = seconds / 3600;
         seconds %= 3600;
         long minutes = seconds / 60;
         seconds %= 60;
 
-        StringBuilder sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder(16);
         if (hours > 0) sb.append(hours).append("h ");
         if (minutes > 0) sb.append(minutes).append("m ");
         if (seconds > 0 || sb.isEmpty()) sb.append(seconds).append("s");
 
-        return sb.toString().trim();
+        return sb.toString();
     }
 
-    /**
-     * Converts a custom Minecraft-style duration string (e.g., "10s", "5m", "2h", "1d")
-     * into an epoch millisecond timestamp relative to the provided {@link Instant}.
-     *
-     * @param now The base instant (typically the current time).
-     * @param str The Minecraft-style duration string.
-     * @return The resulting time as epoch milliseconds, or {@code -1} if invalid format.
-     */
-    public long minecraftTimeToInstant(Instant now, String str) {
-        char lastChar = str.charAt(str.length() - 1);
-        long temporalAmount = Long.parseLong(str.substring(0, str.length() - 1));
+    public static long parseMinecraftDuration(Instant now, String input) {
+        if (input == null || input.length() < 2) return -1L;
+        char lastChar = input.charAt(input.length() - 1);
+        long temporalAmount = Long.parseLong(input.substring(0, input.length() - 1));
         return switch (lastChar) {
             case 's' -> now.plusSeconds(temporalAmount).toEpochMilli();
             case 'm' -> now.plusSeconds(temporalAmount * 60).toEpochMilli();
@@ -72,18 +37,10 @@ public class Time {
         };
     }
 
-    /**
-     * Converts a timestamp in milliseconds to a formatted date string.
-     * Format: <code>yyyy-MM-dd HH:mm:ss</code>
-     *
-     * @param millis The timestamp in milliseconds.
-     * @return A formatted date string.
-     */
-    public String toFormattedDate(long millis) {
+    public static String formatTimestamp(long millis) {
         LocalDateTime localDateTime = Instant.ofEpochMilli(millis)
                 .atZone(ZoneId.systemDefault())
                 .toLocalDateTime();
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        return localDateTime.format(formatter);
+        return localDateTime.format(DATE_FORMATTER);
     }
 }

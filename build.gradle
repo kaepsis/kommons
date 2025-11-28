@@ -3,8 +3,8 @@ plugins {
 }
 
 group = 'com.github.kaepsis'
-version = '1.9.6.5'
-description = "kutils"
+version = '2.0'
+description = "kommons"
 
 repositories {
     mavenCentral()
@@ -15,12 +15,12 @@ repositories {
 }
 
 dependencies {
-    compileOnly 'org.spigotmc:spigot-api:1.21.7-R0.1-SNAPSHOT'
+    compileOnly 'org.spigotmc:spigot-api:1.21.10-R0.1-SNAPSHOT'
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 jar {
