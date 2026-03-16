@@ -5,9 +5,14 @@
     <option name="linkedExternalProjectsSettings">
       <GradleProjectSettings>
         <option name="externalProjectPath" value="$PROJECT_DIR$" />
+        <option name="gradleHome" value="C:\gradle\gradle-9.2.1" />
         <option name="modules">
           <set>
             <option value="$PROJECT_DIR$" />
+            <option value="$PROJECT_DIR$/core" />
+            <option value="$PROJECT_DIR$/legacy" />
+            <option value="$PROJECT_DIR$/modern" />
+            <option value="$PROJECT_DIR$/onlyconfig" />
           </set>
         </option>
       </GradleProjectSettings>

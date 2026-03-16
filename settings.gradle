@@ -1,1 +1,5 @@
 rootProject.name = 'kommons'
+include 'legacy'
+include 'modern'
+include 'core'
+include 'onlyconfig'

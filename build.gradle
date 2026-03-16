@@ -1,36 +1,28 @@
 plugins {
-    id 'java'
+    id "base"
+    id 'com.github.johnrengelman.shadow' version '8.1.1' apply false
 }
 
-group = 'com.github.kaepsis'
-version = '2.0'
-description = "kommons"
+subprojects {
+    apply plugin: "java"
 
-repositories {
-    mavenCentral()
-    maven {
-        name = "spigotmc-repo"
-        url = 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/'
+    group = 'dev.kaepsis.kommons'
+    version = '2.0'
+
+    repositories {
+        mavenCentral()
+        maven {
+            name = "spigotmc-repo"
+            url = 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/'
+        }
+    }
+
+    jar {
+        archiveBaseName.set("${rootProject.name}-${project.name}")
+        destinationDirectory.set(rootProject.layout.buildDirectory.dir("libs"))
     }
 }
 
-dependencies {
-    compileOnly 'org.spigotmc:spigot-api:1.21.10-R0.1-SNAPSHOT'
-}
-
-java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
-}
-
-jar {
-    manifest {
-        attributes(
-                'Implementation-Title': project.name,
-                'Implementation-Version': project.version
-        )
-    }
-    from {
-        configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) }
-    }
+clean {
+    delete rootProject.layout.buildDirectory.dir("libs")
 }
