@@ -1,28 +1,32 @@
 plugins {
-    id "base"
-    id 'com.github.johnrengelman.shadow' version '8.1.1' apply false
+    id "java"
+    id 'com.gradleup.shadow' version '9.4.1'
 }
 
-subprojects {
-    apply plugin: "java"
+group = 'dev.kaepsis.kommons'
+version = '1'
+description = "kommons"
 
-    group = 'dev.kaepsis.kommons'
-    version = '2.0'
-
-    repositories {
-        mavenCentral()
-        maven {
-            name = "spigotmc-repo"
-            url = 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/'
-        }
-    }
-
-    jar {
-        archiveBaseName.set("${rootProject.name}-${project.name}")
-        destinationDirectory.set(rootProject.layout.buildDirectory.dir("libs"))
+repositories {
+    mavenCentral()
+    maven {
+        name = "spigotmc-repo"
+        url = 'https://hub.spigotmc.org/nexus/content/repositories/snapshots/'
     }
 }
 
-clean {
-    delete rootProject.layout.buildDirectory.dir("libs")
+dependencies {
+    compileOnly 'org.spigotmc:spigot-api:1.21.11-R0.1-SNAPSHOT'
+    implementation 'org.yaml:snakeyaml:2.6'
+    implementation 'com.zaxxer:HikariCP:7.0.2'
+}
+
+shadowJar {
+    minimize()
+    mergeServiceFiles()
+    archiveFileName = "${project.description}-${project.version}.jar"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
 }
