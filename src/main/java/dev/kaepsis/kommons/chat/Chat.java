@@ -3,6 +3,7 @@ package dev.kaepsis.kommons.chat;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.entity.Player;
 
 import java.util.List;
 import java.util.Map;
@@ -93,6 +94,10 @@ public class Chat {
         return list.stream()
                 .map(Chat::color)
                 .collect(Collectors.toList());
+    }
+
+    public static void sendTitle(Player player, String title, String subtitle, int fadeIn, int stay, int fadeOut) {
+        player.sendTitle(title, subtitle, fadeIn, stay, fadeOut);
     }
 
     private static String nullToEmpty(String s) {
