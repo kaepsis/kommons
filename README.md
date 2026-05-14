@@ -34,22 +34,5 @@ dependencies {
 </dependencies>
 ```
 
----
-
-# Features
-
-- Chat Color
-- Config (Annotations) + i18n
-- Database Management
-    - DAO (AbstractDao\<K>)
-    - Annotations
-        - Table
-        - Column
-    - QueryManager
-- Cooldown Management
-    - SingleCooldownManager
-    - ByActionCooldownManager
-- Location Utils
-- Time Utils
-- Data Structures
-    - ExpiringSet
+## Full Documentation
+Check the [wiki](https://github.com/kaepsis/kommons/wiki)

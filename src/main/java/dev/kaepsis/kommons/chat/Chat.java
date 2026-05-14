@@ -97,7 +97,7 @@ public class Chat {
     }
 
     public static void sendTitle(Player player, String title, String subtitle, int fadeIn, int stay, int fadeOut) {
-        player.sendTitle(title, subtitle, fadeIn, stay, fadeOut);
+        player.sendTitle(Chat.color(title), Chat.color(subtitle), fadeIn, stay, fadeOut);
     }
 
     private static String nullToEmpty(String s) {
