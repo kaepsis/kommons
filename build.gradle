@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'dev.kaepsis.kommons'
-version = '260514'
+version = '260515'
 description = "kommons"
 
 repositories {

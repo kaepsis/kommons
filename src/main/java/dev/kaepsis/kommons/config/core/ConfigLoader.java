@@ -17,6 +17,58 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+/**
+ * Loads, saves, and manages a configuration file for a given configuration class.
+ * <p>
+ * {@code ConfigLoader} is responsible for synchronising a YAML configuration file
+ * (or any format supported by an {@link IConfigParser}) with a Java class annotated
+ * with {@link ConfigFile}. Fields in that class that should be mapped to configuration
+ * keys must be annotated with {@link ConfigValue}.
+ * </p>
+ * <p>
+ * The loader performs version‑aware merging: if the {@code config-version} stored in
+ * the user's file is lower than the version declared in {@code @ConfigFile.version()},
+ * the loader merges the user's values with the plugin's default configuration
+ * (embedded as a resource) and updates the version. This allows safe addition of
+ * new keys without losing existing customisations.
+ * </p>
+ * <p>
+ * The loader uses a {@link ConfigContainer} as the in‑memory representation and
+ * automatically converts primitive types, strings, maps, and even nested objects
+ * (when a field is of a custom class that appears as a map in the configuration).
+ * </p>
+ * <p>
+ * All changes can be persisted via {@link #save()}, and the configuration can be
+ * reloaded from disk via {@link #reload()}. Individual key‑value pairs can be
+ * updated programmatically with {@link #setValue(String, Object)} which also
+ * persists the change.
+ * </p>
+ * <p>
+ * Example usage:
+ * <pre>{@code
+ * @ConfigFile(name = "settings.yml", version = 260514)
+ * public class Settings {
+ *     @ConfigValue("server.name")
+ *     public static String SERVER_NAME = "MyServer";
+ *
+ *     @ConfigValue("server.port")
+ *     public static int PORT = 25565;
+ *
+ *     @ConfigValue("database")
+ *     public static DatabaseConfig DATABASE = new DatabaseConfig();
+ * }
+ *
+ * ConfigLoader<Settings> loader = new ConfigLoader<>(Settings.class, plugin);
+ * Settings config = loader.load();
+ * // config.SERVER_NAME is now the value from the YAML file
+ * }</pre>
+ * </p>
+ *
+ * @param <T> the type of the configuration class (annotated with {@link ConfigFile})
+ * @author Kaepsis
+ * @version 260515
+ * @since 260514
+ */
 public class ConfigLoader<T> {
 
     private final Class<T> configClass;
@@ -27,12 +79,32 @@ public class ConfigLoader<T> {
     private volatile T instance;
     private int expectedVersion;
 
+    /**
+     * Creates a new configuration loader for the given class and plugin.
+     * <p>
+     * The constructor validates the presence of {@code @ConfigFile} and ensures
+     * the data folder exists. If the configuration file does not exist yet,
+     * the default resource (with the same name as declared in {@code @ConfigFile.name()})
+     * is copied to the plugin's data folder.
+     * </p>
+     *
+     * @param configClass the class that holds the configuration fields (must be annotated with {@link ConfigFile})
+     * @param plugin      the owning JavaPlugin, used to access the data folder and resources
+     * @throws IllegalStateException if {@code configClass} is not annotated with {@code @ConfigFile}
+     * @throws RuntimeException      if the data folder cannot be created
+     */
     public ConfigLoader(Class<T> configClass, JavaPlugin plugin) {
         this.configClass = configClass;
         this.plugin = plugin;
         init();
     }
 
+    /**
+     * Returns the loaded configuration instance.
+     *
+     * @return the configuration instance (populated with values from the file),
+     *         or {@code null} if {@link #load()} has not been called yet
+     */
     public T getInstance() {
         return instance;
     }
@@ -69,6 +141,25 @@ public class ConfigLoader<T> {
         }
     }
 
+    /**
+     * Loads the configuration file, merges with defaults, and returns the populated instance.
+     * <p>
+     * The loading process follows these steps:
+     * <ol>
+     *   <li>Read the default configuration from the plugin's resources.</li>
+     *   <li>Read the user configuration from the disk (if it exists).</li>
+     *   <li>Merge them, giving priority to user values while preserving the order of keys.</li>
+     *   <li>If the stored {@code config-version} is lower than the expected version,
+     *       the merged result is updated with the expected version and any missing keys from defaults.</li>
+     *   <li>The merged data is stored in the internal {@link ConfigContainer}.</li>
+     *   <li>A new instance of {@code T} is created and its {@code @ConfigValue} fields are
+     *       populated with the values from the container.</li>
+     * </ol>
+     * </p>
+     *
+     * @return the fully populated configuration instance
+     * @throws RuntimeException if loading or binding fails
+     */
     public T load() {
         try {
             Map<String, Object> defaults = loadDefaultMap();
@@ -92,6 +183,16 @@ public class ConfigLoader<T> {
         }
     }
 
+    /**
+     * Saves the current in‑memory configuration to disk.
+     * <p>
+     * The entire snapshot of the {@link ConfigContainer} is written to the file
+     * using the configured parser (YAML by default). This method is automatically
+     * called by {@link #setValue(String, Object)} but can also be used explicitly.
+     * </p>
+     *
+     * @throws RuntimeException if the file cannot be written
+     */
     public void save() {
         try {
             parser.save(path, container.snapshot());
@@ -100,6 +201,18 @@ public class ConfigLoader<T> {
         }
     }
 
+    /**
+     * Reloads the configuration from disk and updates the existing instance.
+     * <p>
+     * Unlike {@link #load()} which creates a new instance, {@code reload()} reads
+     * the current file (and defaults), merges with version handling, and then
+     * updates the fields of the existing instance (the one previously returned
+     * by {@link #getInstance()}). This is useful for hot‑reloading without
+     * losing references to the configuration object.
+     * </p>
+     *
+     * @throws RuntimeException if reloading or binding fails
+     */
     public void reload() {
         try {
             Map<String, Object> defaults = loadDefaultMap();
@@ -122,6 +235,19 @@ public class ConfigLoader<T> {
         }
     }
 
+    /**
+     * Sets a value for a specific configuration key, updates the in‑memory
+     * representation, and saves the file.
+     * <p>
+     * The method updates the underlying {@link ConfigContainer}, rebinds all
+     * values into the configuration instance (so that static/instance fields
+     * reflect the new value), and then calls {@link #save()} to persist the change.
+     * </p>
+     *
+     * @param key   the dot‑separated configuration key (e.g., {@code "server.port"})
+     * @param value the new value to store
+     * @throws RuntimeException if binding or saving fails
+     */
     public void setValue(String key, Object value) {
         container.set(key, value);
         try {
