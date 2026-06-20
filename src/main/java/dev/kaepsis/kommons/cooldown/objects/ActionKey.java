@@ -1,5 +1,6 @@
 package dev.kaepsis.kommons.cooldown.objects;
 
+import dev.kaepsis.kommons.cooldown.abstraction.CooldownManager;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Objects;
@@ -8,7 +9,7 @@ import java.util.UUID;
 /**
  * A composite key representing a cooldown for a specific player and action.
  * <p>
- * This record is intended to be used with {@link dev.kaepsis.kommons.cooldown.abstraction.CooldownManager}
+ * This record is intended to be used with {@link CooldownManager}
  * to track per‑player, per‑action cooldowns independently. For example, a player might have separate
  * cooldowns for {@code "command.heal"} and {@code "command.fly"}.
  * </p>
@@ -33,9 +34,10 @@ import java.util.UUID;
  *
  * @param uuid   the unique identifier of the player (never {@code null})
  * @param action the action name or identifier (never {@code null})
+ *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 public record ActionKey(UUID uuid, String action) {
 

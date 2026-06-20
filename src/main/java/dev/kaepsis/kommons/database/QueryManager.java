@@ -55,8 +55,8 @@ import java.util.concurrent.Executor;
  * @param asyncExecutor the executor for asynchronous tasks (if {@code null}, the default
  *                      {@code CompletableFuture} mechanism is used)
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 public record QueryManager(HikariDataSource dataSource, Executor asyncExecutor) {
 
@@ -95,7 +95,7 @@ public record QueryManager(HikariDataSource dataSource, Executor asyncExecutor) 
                 setParams(stmt, params);
                 return stmt.executeUpdate();
             } catch (SQLException e) {
-                LOGGER.error("Errore durante executeUpdate: {}", query, e);
+                LOGGER.error("executeUpdate failed: {}", query, e);
                 throw e;
             }
         });
@@ -112,7 +112,11 @@ public record QueryManager(HikariDataSource dataSource, Executor asyncExecutor) 
      * @param params the parameters for the query
      */
     public void execute(String query, Object... params) {
-        executeUpdate(query, params).thenApply(rows -> null);
+        executeUpdate(query, params)
+                .exceptionally(err -> {
+                    LOGGER.error("execute failed: {}", query, err);
+                    return null;
+                });
     }
 
     /**
@@ -124,6 +128,18 @@ public record QueryManager(HikariDataSource dataSource, Executor asyncExecutor) 
      * @param params    the parameters for the query
      * @return a {@code CompletableFuture} that completes with the extracted value,
      *         or {@code null} if no row was returned
+     *
+     * <p>Example usage:
+     * <pre>{@code
+     * queryManager.queryForValue(
+     *     "SELECT name FROM players WHERE uuid = ?",
+     *     rs -> rs.getString("name"),
+     *     uuid
+     * ).thenAccept(name -> {
+     *     if (name != null) player.sendMessage("Found: " + name);
+     * });
+     * }</pre>
+     * </p>
      */
     public <T> CompletableFuture<T> queryForValue(String query, ISQLFunction<ResultSet, T> extractor, Object... params) {
         return supplyAsync(() -> {
@@ -137,7 +153,7 @@ public record QueryManager(HikariDataSource dataSource, Executor asyncExecutor) 
                     return null;
                 }
             } catch (SQLException e) {
-                LOGGER.error("Errore durante queryForValue: {}", query, e);
+                LOGGER.error("queryForValue failed: {}", query, e);
                 throw e;
             }
         });
@@ -152,6 +168,18 @@ public record QueryManager(HikariDataSource dataSource, Executor asyncExecutor) 
      * @param params    the parameters for the query
      * @return a {@code CompletableFuture} that completes with a list of mapped objects
      *         (never {@code null}; empty list if no rows)
+     *
+     * <p>Example usage:
+     * <pre>{@code
+     * queryManager.queryForList(
+     *     "SELECT * FROM players WHERE online = ?",
+     *     rs -> new Player(rs.getString("uuid"), rs.getString("name"), rs.getInt("level")),
+     *     true
+     * ).thenAccept(players -> {
+     *     players.forEach(p -> Bukkit.broadcastMessage(p.getName()));
+     * });
+     * }</pre>
+     * </p>
      */
     public <T> CompletableFuture<List<T>> queryForList(String query, ISQLFunction<ResultSet, T> extractor, Object... params) {
         return supplyAsync(() -> {
@@ -165,7 +193,7 @@ public record QueryManager(HikariDataSource dataSource, Executor asyncExecutor) 
                     }
                 }
             } catch (SQLException e) {
-                LOGGER.error("Errore durante queryForList: {}", query, e);
+                LOGGER.error("queryForList failed: {}", query, e);
                 throw e;
             }
             return list;
@@ -205,26 +233,30 @@ public record QueryManager(HikariDataSource dataSource, Executor asyncExecutor) 
                     conn.setAutoCommit(true);
                 }
             } catch (SQLException e) {
-                LOGGER.error("Errore durante la transazione", e);
+                LOGGER.error("Transaction update failed", e);
                 throw e;
             }
         });
     }
 
     private <U> CompletableFuture<U> supplyAsync(SupplierWithException<U> supplier) {
-        CompletableFuture<U> future = new CompletableFuture<>();
-        Runnable task = () -> {
-            try {
-                future.complete(supplier.get());
-            } catch (Throwable t) {
-                future.completeExceptionally(t);
-            }
-        };
         if (asyncExecutor != null) {
-            asyncExecutor.execute(task);
-        } else {
-            CompletableFuture.runAsync(task);
+            CompletableFuture<U> future = new CompletableFuture<>();
+            asyncExecutor.execute(() -> {
+                try {
+                    future.complete(supplier.get());
+                } catch (Throwable t) {
+                    future.completeExceptionally(t);
+                }
+            });
+            return future;
         }
-        return future;
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return supplier.get();
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        });
     }
 }

@@ -32,8 +32,8 @@ import java.util.stream.Collectors;
  * </p>
  *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 public class ConfigContainer {
 
@@ -52,29 +52,8 @@ public class ConfigContainer {
      */
     public Object get(String key) {
         lock.readLock().lock();
-        try {
-            String[] parts = key.split("\\.");
-            Map<String, Object> currentMap = data;
-            Object result = null;
-            for (int i = 0; i < parts.length; i++) {
-                result = currentMap.get(parts[i]);
-                if (result == null) {
-                    return null;
-                }
-                if (i < parts.length - 1) {
-                    if (result instanceof Map) {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> next = (Map<String, Object>) result;
-                        currentMap = next;
-                    } else {
-                        return null;
-                    }
-                }
-            }
-            return result;
-        } finally {
-            lock.readLock().unlock();
-        }
+        try { return navigate(key); }
+        finally { lock.readLock().unlock(); }
     }
 
     /**
@@ -170,28 +149,8 @@ public class ConfigContainer {
      */
     public boolean containsKey(String key) {
         lock.readLock().lock();
-        try {
-            String[] parts = key.split("\\.");
-            Map<String, Object> currentMap = data;
-            for (int i = 0; i < parts.length; i++) {
-                Object value = currentMap.get(parts[i]);
-                if (value == null) {
-                    return false;
-                }
-                if (i < parts.length - 1) {
-                    if (value instanceof Map) {
-                        @SuppressWarnings("unchecked")
-                        Map<String, Object> next = (Map<String, Object>) value;
-                        currentMap = next;
-                    } else {
-                        return false;
-                    }
-                }
-            }
-            return true;
-        } finally {
-            lock.readLock().unlock();
-        }
+        try { return navigate(key) != null; }
+        finally { lock.readLock().unlock(); }
     }
 
     /**
@@ -241,15 +200,26 @@ public class ConfigContainer {
     public Set<String> getKeys(String path) {
         lock.readLock().lock();
         try {
-            Object node = path == null || path.isEmpty() ? data : get(path);
-            if (node instanceof Map<?, ?> map) {
-                return map.keySet().stream()
-                        .map(Object::toString)
-                        .collect(Collectors.toCollection(LinkedHashSet::new));
-            }
-            return Collections.emptySet();
+            Object node = (path == null || path.isEmpty()) ? data : navigate(path);
+            if (!(node instanceof Map<?, ?> map)) return Collections.emptySet();
+            return map.keySet().stream()
+                    .map(Object::toString)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
         } finally {
             lock.readLock().unlock();
         }
     }
+
+    @SuppressWarnings("unchecked")
+    private Object navigate(String key) {
+        String[] parts = key.split("\\.");
+        Map<String, Object> current = data;
+        for (int i = 0; i < parts.length - 1; i++) {
+            Object next = current.get(parts[i]);
+            if (!(next instanceof Map)) return null;
+            current = (Map<String, Object>) next;
+        }
+        return current.get(parts[parts.length - 1]);
+    }
+
 }

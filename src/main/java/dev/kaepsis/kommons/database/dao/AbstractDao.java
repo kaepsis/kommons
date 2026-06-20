@@ -3,253 +3,368 @@ package dev.kaepsis.kommons.database.dao;
 import dev.kaepsis.kommons.database.QueryManager;
 import dev.kaepsis.kommons.database.annotations.Column;
 import dev.kaepsis.kommons.database.annotations.Table;
+import org.jetbrains.annotations.NotNull;
 
 import java.lang.reflect.Field;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 /**
- * An abstract base class for Data Access Objects (DAOs) that provide asynchronous
- * database operations for entities of type {@code T}.
+ * An abstract Data Access Object (DAO) providing asynchronous CRUD (Create, Read, Update, Delete)
+ * operations for entity classes mapped via {@link Table} and {@link Column} annotations.
  * <p>
- * This class uses reflection to map fields of the entity class to database columns,
- * based on the {@link Table} and {@link Column} annotations. It provides standard
- * CRUD operations ({@code find}, {@code insert}, {@code update}, {@code delete}) and
- * a table creation method. All methods return {@link CompletableFuture} for non‑blocking
- * asynchronous execution.
+ * To minimize the performance overhead typically associated with reflection, this class parses,
+ * computes, and caches all SQL queries ({@code INSERT}, {@code UPDATE}, {@code UPSERT}) and mapped
+ * {@link Field} references once during object construction. Subsequent database operations use these
+ * cached strings and fields directly.
  * </p>
  * <p>
- * The entity class must be annotated with {@code @Table} to specify the table name,
- * and its persistent fields must be annotated with {@code @Column}. The DAO expects
- * a column named {@code uuid} to be present for {@link #findByUUID(String)} and
- * {@link #delete(String)}; this is a design assumption and can be overridden in
- * subclasses if needed.
- * </p>
- * <p>
- * Example usage for a concrete DAO:
- * <pre>{@code
- * @Table("players")
- * public class Player {
- *     @Column(value = "uuid", type = ColumnType.VARCHAR, length = 36, primaryKey = true)
- *     private String uuid;
- *
- *     @Column(value = "name", type = ColumnType.VARCHAR, length = 16)
- *     private String name;
- * }
- *
- * public class PlayerDao extends AbstractDao<Player> {
- *     public PlayerDao(QueryManager queryManager) {
- *         super(queryManager, Player.class);
- *     }
- * }
- *
- * PlayerDao dao = new PlayerDao(queryManager);
- * dao.createTable(Player.class);
- * dao.insert(player).thenAccept(rows -> ...);
- * }</pre>
+ * All database operations interact through a {@link QueryManager} and return {@link CompletableFuture}
+ * handles, making them entirely non-blocking and safe to use in performance-critical execution paths
+ * (such as application or game server main loops).
  * </p>
  *
- * @param <T> the entity type (must be annotated with {@code @Table})
+ * @param <T> the type of the domain entity managed by this DAO
+ *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 public abstract class AbstractDao<T> {
 
+    /** The query executor responsible for managing database connections and thread pools. */
     protected final QueryManager queryManager;
+
     private final Class<T> type;
     private final String tableName;
+    private final String primaryKeyColumn;
+
+    // cached at construction — reflection runs once, not on every call
+    private final String insertQuery;
+    private final String updateQuery;
+    private final String upsertQuery;
+    private final List<Field> cachedColumnFields;
+    private final List<Field> cachedAllColumnFields;
 
     /**
-     * Constructs a new DAO for the given entity class, using the provided query manager.
+     * Constructs a new {@code AbstractDao} instance, resolving and caching the metadata of the target class.
+     * <p>
+     * During initialization, this constructor scans the provided class type via reflection to identify
+     * its database table name, primary key configuration, and structural column fields. Using this data,
+     * it pre-compiles the template string statements for standard SQL database operations.
+     * </p>
      *
-     * @param queryManager the query manager responsible for asynchronous SQL execution
-     * @param type         the entity class (must be annotated with {@code @Table})
+     * @param queryManager the {@link QueryManager} instance used to delegate database calls
+     * @param type         the {@link Class} type of the entity managed by this DAO
+     * @throws IllegalArgumentException if the provided class is missing the {@link Table} annotation
+     * @throws IllegalStateException    if the provided class does not declare a primary key column
      */
     public AbstractDao(QueryManager queryManager, Class<T> type) {
         this.queryManager = queryManager;
         this.type = type;
-        this.tableName = retrieveTableName(type);
+        this.tableName = resolveTableName(type);
+        this.primaryKeyColumn = resolvePrimaryKeyColumn();
+        this.cachedAllColumnFields = buildColumnFields(false);
+        this.cachedColumnFields = buildColumnFields(true);
+        this.insertQuery = buildInsertQuery();
+        this.updateQuery = buildUpdateQuery();
+        this.upsertQuery = buildUpsertQuery();
+    }
+
+    // -------------------------------------------------------------------------
+    // Public API
+    // -------------------------------------------------------------------------
+
+    /**
+     * Asynchronously retrieves an entity from the database by its primary key identifier.
+     *
+     * @param id the primary key identifier value (e.g., a UUID, Long, or Integer)
+     * @return a {@link CompletableFuture} supplying an {@link Optional} containing the mapped
+     * entity instance if found; otherwise an empty {@link Optional}
+     */
+    public CompletableFuture<Optional<T>> findById(Object id) {
+        String query = "SELECT * FROM " + tableName + " WHERE " + primaryKeyColumn + " = ?";
+        return queryManager.queryForValue(query, this::mapRow, id)
+                .thenApply(Optional::ofNullable);
     }
 
     /**
-     * Asynchronously finds an entity by its UUID.
+     * Asynchronously retrieves a list of all entities in the database up to a default safety ceiling.
      * <p>
-     * The query uses {@code WHERE uuid = ?}. The result is mapped to an instance of
-     * {@code T} using {@link #mapRow(ResultSet)}.
+     * To prevent accidental memory exhaustion or network throttling over large datasets, this call
+     * defaults to an internal constraint of {@code LIMIT 1000 OFFSET 0}.
      * </p>
      *
-     * @param uuid the UUID of the entity (as a string)
-     * @return a {@code CompletableFuture} that completes with the found entity,
-     *         or {@code null} if no entity with that UUID exists
-     */
-    public CompletableFuture<T> findByUUID(String uuid) {
-        String query = "SELECT * FROM " + tableName + " WHERE uuid = ?";
-        return queryManager.queryForValue(query, this::mapRow, uuid);
-    }
-
-    /**
-     * Asynchronously retrieves all entities from the table.
-     *
-     * @return a {@code CompletableFuture} that completes with a list of all entities
-     *         (possibly empty)
+     * @return a {@link CompletableFuture} supplying a {@link List} of all mapped entity instances found
+     * @see #findAll(int, int)
      */
     public CompletableFuture<List<T>> findAll() {
-        String query = "SELECT * FROM " + tableName;
-        return queryManager.queryForList(query, this::mapRow);
+        return findAll(1000, 0);
     }
 
     /**
-     * Asynchronously inserts the given entity into the database.
+     * Asynchronously retrieves a paginated window of entities from the database.
+     *
+     * @param limit  the maximum number of rows to return in the query response window
+     * @param offset the number of leading rows to skip before collecting records
+     * @return a {@link CompletableFuture} supplying a {@link List} of the mapped entity results found
+     */
+    public CompletableFuture<List<T>> findAll(int limit, int offset) {
+        String query = "SELECT * FROM " + tableName + " LIMIT ? OFFSET ?";
+        return queryManager.queryForList(query, this::mapRow, limit, offset);
+    }
+
+    /**
+     * Asynchronously inserts a new entity instance into the database.
      * <p>
-     * The insert query is built dynamically from the entity's fields using
-     * {@link #buildInsertQuery()}, and field values are extracted with
-     * {@link #extractValues(Object)}.
+     * Fields designated as {@code autoincrement = true} within their {@link Column} annotation
+     * parameters are automatically omitted from the generated query structure to allow the underlying
+     * database system to handle key sequence generation.
      * </p>
      *
-     * @param entity the entity to insert
-     * @return a {@code CompletableFuture} that completes with the number of affected rows
+     * @param entity the entity instance whose values are to be committed
+     * @return a {@link CompletableFuture} supplying the number of database rows affected (typically 1)
      */
     public CompletableFuture<Integer> insert(T entity) {
-        String query = buildInsertQuery();
-        Object[] params = extractValues(entity);
-        return queryManager.executeUpdate(query, params);
+        return queryManager.executeUpdate(insertQuery, extractValues(entity, false));
     }
 
     /**
-     * Asynchronously updates the given entity in the database.
-     * <p>
-     * The update query is built using {@link #buildUpdateQuery()}. All fields except
-     * {@code uuid} are updated, and the {@code uuid} field is used in the {@code WHERE} clause.
-     * </p>
+     * Asynchronously updates all non-primary-key field data of an existing row matching the entity's primary key identifier.
      *
-     * @param entity the entity to update (must contain a valid UUID field)
-     * @return a {@code CompletableFuture} that completes with the number of affected rows
+     * @param entity the entity instance containing the updated target values
+     * @return a {@link CompletableFuture} supplying the number of database rows affected
      */
     public CompletableFuture<Integer> update(T entity) {
-        String query = buildUpdateQuery();
-        Object[] params = extractValues(entity);
-        return queryManager.executeUpdate(query, params);
+        return queryManager.executeUpdate(updateQuery, extractValues(entity, true));
     }
 
     /**
-     * Asynchronously deletes an entity by its UUID.
+     * Asynchronously executes a single atomic insert-or-update (`UPSERT`) statement via an
+     * {@code ON DUPLICATE KEY UPDATE} database query syntax structure.
+     * <p>
+     * This methodology combines insertion branching rules safely within a single database server round-trip.
+     * It is highly recommended for highly concurrent save workflows, such as updating state objects in plugin architectures.
+     * </p>
      *
-     * @param uuid the UUID of the entity to delete
-     * @return a {@code CompletableFuture} that completes with the number of affected rows
+     * @param entity the entity instance to insert or update
+     * @return a {@link CompletableFuture} supplying the number of database rows affected (1 for an insert, 2 for an update)
      */
-    public CompletableFuture<Integer> delete(String uuid) {
-        String query = "DELETE FROM " + tableName + " WHERE uuid = ?";
-        return queryManager.executeUpdate(query, uuid);
+    public CompletableFuture<Integer> upsert(T entity) {
+        return queryManager.executeUpdate(upsertQuery, extractValues(entity, false));
     }
 
     /**
-     * Creates the database table for the given entity class if it does not already exist.
+     * Asynchronously inserts a collection of entities collectively in a single execution operation batch block.
      * <p>
-     * The SQL {@code CREATE TABLE IF NOT EXISTS} statement is generated based on the
-     * {@code @Table} and {@code @Column} annotations. It respects column types, lengths,
-     * decimal precision, nullability, primary keys, auto‑increment, and default values.
-     * </p>
-     * <p>
-     * This method executes synchronously (blocking). For asynchronous table creation,
-     * wrap the call in a {@code CompletableFuture.runAsync(...)}.
+     * Rather than triggering separate structural loops or network round-trips for every item, this method builds
+     * a multi-row statement dynamically (e.g., {@code INSERT INTO table VALUES (?,?), (?,?)}).
      * </p>
      *
-     * @param type the entity class (must be annotated with {@code @Table})
+     * @param entities the {@link List} of entities to be inserted into the database
+     * @return a {@link CompletableFuture} supplying the total number of database rows inserted or affected
      */
-    public void createTable(Class<T> type) {
-        String tableName = retrieveTableName(type);
-        String query = "CREATE TABLE IF NOT EXISTS " + tableName + " (";
-        StringBuilder stringBuilder = new StringBuilder(query);
-        List<String> columns = new ArrayList<>();
-        for (Field field : type.getDeclaredFields()) {
-            Column column = field.getAnnotation(Column.class);
-            if (column == null) continue;
-            StringBuilder col = new StringBuilder();
-            col.append(column.value()).append(" ");
-            if (column.decimal()) {
-                col.append(column.type().name())
-                        .append("(").append(column.decimalValues()).append(") ");
-            } else {
-                col.append(column.type().name())
-                        .append("(").append(column.length()).append(") ");
-            }
-            if (!column.defaultValue().isEmpty()) col.append("DEFAULT ").append(formatDefault(column)).append(" ");
-            if (!column.nullable()) col.append("NOT NULL ");
-            if (column.primaryKey()) col.append("PRIMARY KEY ");
-            if (column.autoincrement()) col.append("AUTO_INCREMENT ");
-            columns.add(col.toString().trim());
-        }
-        stringBuilder.append(String.join(", ", columns));
-        stringBuilder.append(");");
-        this.queryManager.execute(stringBuilder.toString());
+    public CompletableFuture<Integer> insertBatch(List<T> entities) {
+        if (entities.isEmpty()) return CompletableFuture.completedFuture(0);
+
+        List<Field> fields = columnFields();
+        String cols = fields.stream()
+                .map(f -> f.getAnnotation(Column.class).value())
+                .collect(Collectors.joining(", "));
+        String rowPlaceholder = "(" + fields.stream().map(f -> "?").collect(Collectors.joining(", ")) + ")";
+        String allRows = String.join(", ", Collections.nCopies(entities.size(), rowPlaceholder));
+
+        Object[] params = entities.stream()
+                .flatMap(e -> Arrays.stream(extractValues(e, false)))
+                .toArray();
+
+        return queryManager.executeUpdate(
+                "INSERT INTO " + tableName + " (" + cols + ") VALUES " + allRows, params
+        );
     }
 
-    private String formatDefault(Column column) {
-        String value = column.defaultValue();
-        if (value.equalsIgnoreCase("CURRENT_TIMESTAMP")) {
-            return value;
-        }
-        if (value.matches("-?\\d+(\\.\\d+)?")) {
-            return value;
-        }
-        return "'" + value + "'";
+    /**
+     * Asynchronously deletes a row record from the database matching the provided primary key identifier.
+     *
+     * @param id the primary key identifier of the record to remove
+     * @return a {@link CompletableFuture} supplying the number of database rows affected
+     */
+    public CompletableFuture<Integer> delete(Object id) {
+        return queryManager.executeUpdate(
+                "DELETE FROM " + tableName + " WHERE " + primaryKeyColumn + " = ?", id
+        );
     }
 
-    private String retrieveTableName(Class<T> type) {
-        return type.getAnnotation(Table.class).value();
+    /**
+     * Synchronously builds and creates the target database table if it does not already exist.
+     * <p>
+     * This utility mapping method should typically be invoked exactly once during the initialization
+     * or startup routine phase of a plugin lifecycle.
+     * </p>
+     */
+    public void createTable() {
+        queryManager.execute(TableSchemaBuilder.build(type));
     }
 
-    private T mapRow(ResultSet rs) throws SQLException {
+    // -------------------------------------------------------------------------
+    // Protected — subclasses can override mapRow for performance-critical paths
+    // -------------------------------------------------------------------------
+
+    /**
+     * Maps the active row of a SQL {@link ResultSet} to a new concrete Java object instance of type {@code T}.
+     * <p>
+     * The base implementation relies entirely on reflection by executing a parameterless default constructor
+     * and sequentially mapping fields via column mappings. Subclasses can safely override this method to use explicit
+     * setter parameters or builder pipelines to maximize throughput performance-critical execution loops.
+     * </p>
+     *
+     * @param rs the open JDBC {@link ResultSet} positioned at the target mapping row
+     * @return a mapped instance of the domain object entity
+     * @throws SQLException if a database mapping error occurs, or if reflection initialization fails
+     */
+    protected T mapRow(ResultSet rs) throws SQLException {
         try {
             T instance = type.getDeclaredConstructor().newInstance();
-            for (Field field : type.getDeclaredFields()) {
-                field.setAccessible(true);
-                Object value = rs.getObject(field.getName());
-                field.set(instance, value);
+            for (Field field : cachedAllColumnFields) {
+                Column col = field.getAnnotation(Column.class);
+                field.set(instance, rs.getObject(col.value()));
             }
             return instance;
         } catch (Exception e) {
-            throw new SQLException("Error while mapping object. ", e);
+            throw new SQLException("Failed to map row to " + type.getSimpleName(), e);
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Private
+    // -------------------------------------------------------------------------
+
+    /**
+     * Extracts the database table name configuration from the type's {@link Table} annotation structural properties.
+     */
+    private String resolveTableName(Class<T> type) {
+        Table table = type.getAnnotation(Table.class);
+        if (table == null)
+            throw new IllegalArgumentException(type.getSimpleName() + " is missing @Table");
+        return table.value();
+    }
+
+    /**
+     * Searches declared class fields via reflection to locate and identify the explicit primary key column definition.
+     */
+    private String resolvePrimaryKeyColumn() {
+        for (Field field : type.getDeclaredFields()) {
+            Column col = field.getAnnotation(Column.class);
+            if (col != null && col.primaryKey()) return col.value();
+        }
+        throw new IllegalStateException(type.getSimpleName() + " has no field with @Column(primaryKey = true)");
+    }
+
+    /**
+     * Reflectively constructs an internal list of fields declaring the {@link Column} annotation,
+     * modifying field security access properties when necessary.
+     *
+     * @param skipAutoIncrement if true, fields containing an auto-incrementing designation parameter are skipped
+     */
+    private List<Field> buildColumnFields(boolean skipAutoIncrement) {
+        List<Field> result = new ArrayList<>();
+        for (Field field : type.getDeclaredFields()) {
+            Column col = field.getAnnotation(Column.class);
+            if (col == null) continue;
+            if (skipAutoIncrement && col.autoincrement()) continue;
+            field.setAccessible(true);
+            result.add(field);
+        }
+        return result;
+    }
+
+    /**
+     * Constructs the static pre-compiled SQL string template used for inserting record entries.
+     */
     private String buildInsertQuery() {
-        StringBuilder columns = new StringBuilder();
-        StringBuilder values = new StringBuilder();
-        for (Field field : type.getDeclaredFields()) {
-            if (!columns.isEmpty()) columns.append(", ");
-            columns.append(field.getName());
-            if (!values.isEmpty()) values.append(", ");
-            values.append("?");
-        }
-        return "INSERT INTO " + tableName + " (" + columns + ") VALUES (" + values + ")";
+        List<Field> fields = columnFields();
+        return buildInsertBase(fields);
     }
 
+    /**
+     * Constructs the static pre-compiled SQL string template used for updating matching rows.
+     */
     private String buildUpdateQuery() {
-        StringBuilder set = new StringBuilder();
-        for (Field field : type.getDeclaredFields()) {
-            if (field.getName().equals("uuid")) continue;
-            if (!set.isEmpty()) set.append(", ");
-            set.append(field.getName()).append(" = ?");
-        }
-        return "UPDATE " + tableName + " SET " + set + " WHERE uuid = ?";
+        List<Field> fields = columnFields(); // exclude autoincrement
+        String set = fields.stream()
+                .map(f -> {
+                    String col = f.getAnnotation(Column.class).value();
+                    return col + " = ?";
+                })
+                .collect(Collectors.joining(", "));
+        return "UPDATE " + tableName + " SET " + set + " WHERE " + primaryKeyColumn + " = ?";
     }
 
-    private Object[] extractValues(T entity) {
+    /**
+     * Constructs the static pre-compiled SQL string template used for processing insert-or-update transactions.
+     */
+    private String buildUpsertQuery() {
+        List<Field> fields = columnFields();
+        String onDuplicate = fields.stream()
+                .filter(f -> !f.getAnnotation(Column.class).primaryKey())
+                .map(f -> {
+                    String col = f.getAnnotation(Column.class).value();
+                    return col + " = VALUES(" + col + ")";
+                })
+                .collect(Collectors.joining(", "));
+        return buildInsertBase(fields) + " ON DUPLICATE KEY UPDATE " + onDuplicate;
+    }
+
+    /**
+     * Helper mapping framework utilized to build standardized parameter insert statements.
+     */
+    private String buildInsertBase(List<Field> fields) {
+        String cols = fields.stream()
+                .map(f -> f.getAnnotation(Column.class).value())
+                .collect(Collectors.joining(", "));
+        String placeholders = fields.stream()
+                .map(f -> "?")
+                .collect(Collectors.joining(", "));
+        return "INSERT INTO " + tableName + " (" + cols + ") VALUES (" + placeholders + ")";
+    }
+
+    /**
+     * Extracts instance field values from an entity instance target into an ordered parameters array.
+     *
+     * @param entity the entity instance containing data to inspect
+     * @param pkLast if true, the primary key parameter value is appended at the very end of the collection array (required for UPDATE workflows)
+     * @return an ordered array of query parameter values
+     */
+    private Object[] extractValues(T entity, boolean pkLast) {
         List<Object> values = new ArrayList<>();
+        Object pkValue = null;
         try {
             for (Field field : type.getDeclaredFields()) {
-                field.setAccessible(true);
-                values.add(field.get(entity));
+                Column col = field.getAnnotation(Column.class);
+                if (col == null || col.autoincrement()) continue;
+                if (pkLast && col.primaryKey()) {
+                    pkValue = field.get(entity);
+                } else {
+                    values.add(field.get(entity));
+                }
             }
+            if (pkLast) values.add(pkValue);
         } catch (IllegalAccessException e) {
-            throw new RuntimeException(e);
+            throw new RuntimeException("Failed to extract values from " + type.getSimpleName(), e);
         }
         return values.toArray();
     }
 
+    /**
+     * Retrieves the list of cached fields mapped to database columns, omitting auto-incremented fields.
+     *
+     * @return a unmodifiable structure reference of applicable column {@link Field} elements
+     */
+    @NotNull
+    private List<Field> columnFields() {
+        return cachedColumnFields;
+    }
 }

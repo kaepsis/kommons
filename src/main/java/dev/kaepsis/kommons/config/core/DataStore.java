@@ -1,6 +1,5 @@
-package dev.kaepsis.kommons.config.store;
+package dev.kaepsis.kommons.config.core;
 
-import dev.kaepsis.kommons.config.core.ConfigContainer;
 import dev.kaepsis.kommons.config.parser.IConfigParser;
 import dev.kaepsis.kommons.config.parser.impl.YamlParser;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -43,8 +42,8 @@ import java.util.Set;
  * </p>
  *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 public class DataStore {
 
@@ -72,7 +71,7 @@ public class DataStore {
             throw new RuntimeException("Cannot create data folder", e);
         }
         this.path = dataFolder.resolve(fileName);
-        this.parser = new YamlParser();
+        this.parser = ConfigParsers.forFile(fileName);
         if (Files.exists(path)) load();
     }
 

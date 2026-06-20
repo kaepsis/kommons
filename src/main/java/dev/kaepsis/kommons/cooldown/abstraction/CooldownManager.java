@@ -32,9 +32,10 @@ import java.util.concurrent.TimeUnit;
  * </p>
  *
  * @param <K> the type of keys used to identify cooldowns (e.g., {@code UUID}, {@code String})
+ *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 public abstract class CooldownManager<K> {
 

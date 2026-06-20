@@ -2,12 +2,8 @@ package dev.kaepsis.kommons.config.core;
 
 import dev.kaepsis.kommons.config.annotations.ConfigFile;
 import dev.kaepsis.kommons.config.annotations.ConfigValue;
-import dev.kaepsis.kommons.config.parser.IConfigParser;
-import dev.kaepsis.kommons.config.parser.impl.YamlParser;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
@@ -18,258 +14,172 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Loads, saves, and manages a configuration file for a given configuration class.
+ * Loads, saves, and manages an integrated configuration mapping pipeline for a target class
+ * annotated with {@link ConfigFile}.
  * <p>
- * {@code ConfigLoader} is responsible for synchronising a YAML configuration file
- * (or any format supported by an {@link IConfigParser}) with a Java class annotated
- * with {@link ConfigFile}. Fields in that class that should be mapped to configuration
- * keys must be annotated with {@link ConfigValue}.
+ * This class extends {@link AbstractConfigLoader} to provide full type conversion features.
+ * It reflectively unpacks structural file properties into standard Java types, covering:
+ * <ul>
+ * <li>Primitives and their respective object wrappers (e.g., {@code int}, {@code boolean}, {@code double}).</li>
+ * <li>Standard collections and arbitrary mappings ({@link Map}).</li>
+ * <li>Highly nested configurations, binding sub-maps recursively into dedicated custom object schemas.</li>
+ * </ul>
  * </p>
  * <p>
- * The loader performs version‑aware merging: if the {@code config-version} stored in
- * the user's file is lower than the version declared in {@code @ConfigFile.version()},
- * the loader merges the user's values with the plugin's default configuration
- * (embedded as a resource) and updates the version. This allows safe addition of
- * new keys without losing existing customisations.
- * </p>
- * <p>
- * The loader uses a {@link ConfigContainer} as the in‑memory representation and
- * automatically converts primitive types, strings, maps, and even nested objects
- * (when a field is of a custom class that appears as a map in the configuration).
- * </p>
- * <p>
- * All changes can be persisted via {@link #save()}, and the configuration can be
- * reloaded from disk via {@link #reload()}. Individual key‑value pairs can be
- * updated programmatically with {@link #setValue(String, Object)} which also
- * persists the change.
- * </p>
- * <p>
- * Example usage:
- * <pre>{@code
- * @ConfigFile(name = "settings.yml", version = 260514)
- * public class Settings {
- *     @ConfigValue("server.name")
- *     public static String SERVER_NAME = "MyServer";
- *
- *     @ConfigValue("server.port")
- *     public static int PORT = 25565;
- *
- *     @ConfigValue("database")
- *     public static DatabaseConfig DATABASE = new DatabaseConfig();
- * }
- *
- * ConfigLoader<Settings> loader = new ConfigLoader<>(Settings.class, plugin);
- * Settings config = loader.load();
- * // config.SERVER_NAME is now the value from the YAML file
- * }</pre>
+ * State mutations applied via {@link #setValue(String, Object)} trigger an absolute structural
+ * refresh on the mapping instances, before systematically flushing changes back onto disk storage.
  * </p>
  *
- * @param <T> the type of the configuration class (annotated with {@link ConfigFile})
+ * @param <T> the type of the domain configuration container class managed by this loader
+ * @see AbstractConfigLoader
+ *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
-public class ConfigLoader<T> {
+public class ConfigLoader<T> extends AbstractConfigLoader<T> {
 
-    private final Class<T> configClass;
-    private final ConfigContainer container = new ConfigContainer();
-    private final JavaPlugin plugin;
-    private Path path;
-    private IConfigParser parser;
-    private volatile T instance;
-    private int expectedVersion;
+    /** The internal structural version mapping identifier property key used inside configuration files. */
+    private static final String VERSION_KEY = "config-version";
 
     /**
-     * Creates a new configuration loader for the given class and plugin.
+     * Resolves the primary configuration filename driven by class metadata elements before
+     * the core super-constructor initializes the backing file format parser pipeline.
+     */
+    private static String resolveFileName(Class<?> configClass) {
+        ConfigFile meta = configClass.getAnnotation(ConfigFile.class);
+        if (meta == null) throw new IllegalStateException("Missing @ConfigFile on " + configClass.getSimpleName());
+        return meta.name();
+    }
+
+    private final ConfigContainer container = new ConfigContainer();
+    private final Path path;
+    private final int expectedVersion;
+
+    /**
+     * Constructs a new {@code ConfigLoader} instance linked to a specific configuration target context.
      * <p>
-     * The constructor validates the presence of {@code @ConfigFile} and ensures
-     * the data folder exists. If the configuration file does not exist yet,
-     * the default resource (with the same name as declared in {@code @ConfigFile.name()})
-     * is copied to the plugin's data folder.
+     * Scans and verifies the required {@link ConfigFile} annotation properties on the class definition
+     * metadata tree, maps target filesystem properties, and exports pristine asset files directly
+     * out of embedded JAR resource streams if missing on disk.
      * </p>
      *
-     * @param configClass the class that holds the configuration fields (must be annotated with {@link ConfigFile})
-     * @param plugin      the owning JavaPlugin, used to access the data folder and resources
-     * @throws IllegalStateException if {@code configClass} is not annotated with {@code @ConfigFile}
-     * @throws RuntimeException      if the data folder cannot be created
+     * @param configClass the metadata configuration {@link Class} container blueprint type
+     * @param plugin      the hosting {@link JavaPlugin} platform runtime execution context instance
+     * @throws IllegalStateException if the target configuration container class is missing the {@link ConfigFile} annotation
      */
     public ConfigLoader(Class<T> configClass, JavaPlugin plugin) {
-        this.configClass = configClass;
-        this.plugin = plugin;
-        init();
+        super(configClass, plugin, ConfigParsers.forFile(resolveFileName(configClass)));
+
+        ConfigFile meta = configClass.getAnnotation(ConfigFile.class);
+        if (meta == null) throw new IllegalStateException("Missing @ConfigFile on " + configClass.getSimpleName());
+
+        this.expectedVersion = meta.version();
+        ensureDataFolder();
+        this.path = plugin.getDataFolder().toPath().resolve(meta.name());
+
+        if (!Files.exists(path)) plugin.saveResource(meta.name(), false);
     }
 
     /**
-     * Returns the loaded configuration instance.
-     *
-     * @return the configuration instance (populated with values from the file),
-     *         or {@code null} if {@link #load()} has not been called yet
-     */
-    public T getInstance() {
-        return instance;
-    }
-
-    private void init() {
-        ConfigFile configFile = configClass.getAnnotation(ConfigFile.class);
-        if (configFile == null) {
-            throw new IllegalStateException("Missing @ConfigFile on " + configClass.getName());
-        }
-        this.expectedVersion = configFile.version();
-
-        Path dataFolder = plugin.getDataFolder().toPath();
-        if (!Files.exists(dataFolder)) {
-            try {
-                Files.createDirectories(dataFolder);
-            } catch (IOException e) {
-                throw new RuntimeException("Impossible to create data folder: " + e.getMessage());
-            }
-        }
-        this.path = dataFolder.resolve(configFile.name());
-        this.parser = new YamlParser();
-        if (!Files.exists(path)) {
-            plugin.saveResource(configFile.name(), false);
-        }
-    }
-
-    private Map<String, Object> loadDefaultMap() throws IOException {
-        String fileName = configClass.getAnnotation(ConfigFile.class).name();
-        try (InputStream in = plugin.getResource(fileName)) {
-            if (in == null) {
-                throw new IOException("Default config resource not found: " + fileName);
-            }
-            return parser.load(in);
-        }
-    }
-
-    /**
-     * Loads the configuration file, merges with defaults, and returns the populated instance.
+     * {@inheritDoc}
      * <p>
-     * The loading process follows these steps:
-     * <ol>
-     *   <li>Read the default configuration from the plugin's resources.</li>
-     *   <li>Read the user configuration from the disk (if it exists).</li>
-     *   <li>Merge them, giving priority to user values while preserving the order of keys.</li>
-     *   <li>If the stored {@code config-version} is lower than the expected version,
-     *       the merged result is updated with the expected version and any missing keys from defaults.</li>
-     *   <li>The merged data is stored in the internal {@link ConfigContainer}.</li>
-     *   <li>A new instance of {@code T} is created and its {@code @ConfigValue} fields are
-     *       populated with the values from the container.</li>
-     * </ol>
+     * Synchronously resolves file hierarchies across defaults and disk spaces, processes schema
+     * version merges, initializes memory storage containers, and updates internal instance reference variables.
      * </p>
      *
-     * @return the fully populated configuration instance
-     * @throws RuntimeException if loading or binding fails
+     * @throws RuntimeException if reflecting properties or handling mapping parameter streams encounters processing faults
      */
-    public T load() {
+    @Override
+    public void load() {
+        Map<String, Object> defaults = loadFromResources(configClass.getAnnotation(ConfigFile.class).name());
+        Map<String, Object> user = loadFromDisk(path);
+        Map<String, Object> merged = merge(defaults, user);
+
+        int storedVersion = getVersion(user, VERSION_KEY);
+        merged.put(VERSION_KEY, Math.max(storedVersion, expectedVersion));
+
+        container.replace(merged);
         try {
-            Map<String, Object> defaults = loadDefaultMap();
-            Map<String, Object> user = Files.exists(path) ? parser.load(path) : new LinkedHashMap<>();
-
-            Map<String, Object> merged = mergePreservingOrder(defaults, user);
-            int userVersion = getVersion(user);
-
-            if (userVersion < expectedVersion) {
-                merged = mergePreservingOrder(defaults, user);
-                merged.put("config-version", expectedVersion);
-            } else {
-                merged.put("config-version", userVersion);
-            }
-
-            container.replace(merged);
             instance = bindValues();
-            return instance;
         } catch (Exception e) {
             throw new RuntimeException("Failed to load config", e);
         }
     }
 
     /**
-     * Saves the current in‑memory configuration to disk.
+     * {@inheritDoc}
      * <p>
-     * The entire snapshot of the {@link ConfigContainer} is written to the file
-     * using the configured parser (YAML by default). This method is automatically
-     * called by {@link #setValue(String, Object)} but can also be used explicitly.
+     * Re-runs the configuration mapping layer workflow to refresh state variables from modified files.
      * </p>
-     *
-     * @throws RuntimeException if the file cannot be written
+     */
+    @Override
+    public void reload() {
+        load();
+    }
+
+    /**
+     * Flushes the current point-in-time snapshot state of the internal configuration
+     * memory container directly down onto the designated filesystem path.
      */
     public void save() {
-        try {
-            parser.save(path, container.snapshot());
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        saveToDisk(path, container.snapshot());
     }
 
     /**
-     * Reloads the configuration from disk and updates the existing instance.
-     * <p>
-     * Unlike {@link #load()} which creates a new instance, {@code reload()} reads
-     * the current file (and defaults), merges with version handling, and then
-     * updates the fields of the existing instance (the one previously returned
-     * by {@link #getInstance()}). This is useful for hot‑reloading without
-     * losing references to the configuration object.
-     * </p>
+     * Updates a specific configuration property inside the storage container, dynamically re-binds
+     * the configuration instance fields to mirror the updated state, and pushes updates directly onto disk.
      *
-     * @throws RuntimeException if reloading or binding fails
-     */
-    public void reload() {
-        try {
-            Map<String, Object> defaults = loadDefaultMap();
-            Map<String, Object> user = parser.load(path);
-            int userVersion = getVersion(user);
-
-            Map<String, Object> merged;
-            if (userVersion < expectedVersion) {
-                merged = mergePreservingOrder(defaults, user);
-                merged.put("config-version", expectedVersion);
-            } else {
-                merged = mergePreservingOrder(defaults, user);
-                merged.put("config-version", userVersion);
-            }
-
-            container.replace(merged);
-            bindInto(instance);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to reload config", e);
-        }
-    }
-
-    /**
-     * Sets a value for a specific configuration key, updates the in‑memory
-     * representation, and saves the file.
-     * <p>
-     * The method updates the underlying {@link ConfigContainer}, rebinds all
-     * values into the configuration instance (so that static/instance fields
-     * reflect the new value), and then calls {@link #save()} to persist the change.
-     * </p>
-     *
-     * @param key   the dot‑separated configuration key (e.g., {@code "server.port"})
-     * @param value the new value to store
-     * @throws RuntimeException if binding or saving fails
+     * @param key   the exact hierarchical configuration node key to target
+     * @param value the raw object value to associate with the designated configuration node key
+     * @throws RuntimeException if mapping parameter values or running post-save reflective binds fail
      */
     public void setValue(String key, Object value) {
         container.set(key, value);
         try {
             instance = bindValues();
         } catch (Exception e) {
-            throw new RuntimeException("Error while binding values: " + e.getMessage());
+            throw new RuntimeException("Failed to bind after setValue: " + key, e);
         }
         save();
     }
 
+    // -------------------------------------------------------------------------
+    // Binding & conversion
+    // -------------------------------------------------------------------------
+
+    /**
+     * Instantiates a pristine target configuration class type container and reflectively populates
+     * fields carrying the explicit {@link ConfigValue} structural markers.
+     *
+     * @return a fully populated instance of the configuration class type
+     * @throws Exception if constructors are inaccessible, or field mapping logic encounters type mismatches
+     */
     private T bindValues() throws Exception {
-        T instance = configClass.getDeclaredConstructor().newInstance();
+        T obj = configClass.getDeclaredConstructor().newInstance();
         for (Field field : configClass.getDeclaredFields()) {
-            ConfigValue configValue = field.getAnnotation(ConfigValue.class);
-            if (configValue == null) continue;
-            Object value = container.get(configValue.value());
+            ConfigValue cv = field.getAnnotation(ConfigValue.class);
+            if (cv == null) continue;
+            Object value = container.get(cv.value());
             field.setAccessible(true);
-            field.set(instance, convertField(value, field));
+            field.set(obj, convertField(value, field));
         }
-        return instance;
+        return obj;
     }
 
+    /**
+     * Assesses field signature declarations to process complex parameters, isolating generic maps,
+     * parameter types, and deep nesting structures before delegating down onto base converters.
+     * <p>
+     * If a field is identified as a parameterized map holding complex custom types as values, this method
+     * unpacks incoming sub-elements and transforms them recursively into target object blueprints.
+     * </p>
+     *
+     * @param value the raw object node value fetched out of the structural map tree
+     * @param field the explicit target class {@link Field} reflection definition context
+     * @return a converted, fully-formed object structure matched to the field type signature
+     * @throws Exception if underlying reflection routines or conversion rules encounter compliance errors
+     */
     private Object convertField(Object value, Field field) throws Exception {
         Type genericType = field.getGenericType();
         if (genericType instanceof ParameterizedType pt) {
@@ -281,12 +191,11 @@ public class ConfigLoader<T> {
                         && valueClass != Object.class) {
                     Map<String, Object> result = new LinkedHashMap<>();
                     for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
-                        String k = entry.getKey().toString();
                         if (entry.getValue() instanceof Map<?, ?> nested) {
                             Map<String, Object> nestedMap = new LinkedHashMap<>();
                             for (Map.Entry<?, ?> ne : nested.entrySet())
                                 nestedMap.put(ne.getKey().toString(), ne.getValue());
-                            result.put(k, bindObjectFromMap(nestedMap, valueClass));
+                            result.put(entry.getKey().toString(), bindObjectFromMap(nestedMap, valueClass));
                         }
                     }
                     return result;
@@ -296,115 +205,60 @@ public class ConfigLoader<T> {
         return convert(value, field.getType());
     }
 
-    private void bindInto(T target) throws Exception {
-        for (Field field : configClass.getDeclaredFields()) {
-            ConfigValue configValue = field.getAnnotation(ConfigValue.class);
-            if (configValue == null) continue;
-            String key = configValue.value();
-            Object value = container.get(key);
-            if (value == null) {
-                throw new IllegalStateException("Missing config key: " + key);
-            }
-            field.setAccessible(true);
-            field.set(target, convertField(value, field));
-        }
-    }
-
+    /**
+     * Converts a raw input value into a definitive target class structure type, applying primitive parsing
+     * boundaries, string translation layers, or triggering object mapping routines when required.
+     *
+     * @param value the raw structural value data source to parse
+     * @param type  the objective target {@link Class} destination format requirements
+     * @return a concrete value instance matching the target class requirements
+     * @throws IllegalArgumentException if no safe conversion route can be derived between incoming data types and target assignments
+     * @throws Exception                 if underlying numeric string parsing errors occur
+     */
     private Object convert(Object value, Class<?> type) throws Exception {
         if (value == null) return null;
         if (type.isPrimitive()) {
-            if (type == int.class) {
-                if (value instanceof Number) return ((Number) value).intValue();
-                return Integer.parseInt(value.toString());
-            }
-            if (type == boolean.class) {
-                if (value instanceof Boolean) return value;
-                return Boolean.parseBoolean(value.toString());
-            }
-            if (type == double.class) {
-                if (value instanceof Number) return ((Number) value).doubleValue();
-                return Double.parseDouble(value.toString());
-            }
-            if (type == float.class) {
-                if (value instanceof Number) return ((Number) value).floatValue();
-                return Float.parseFloat(value.toString());
-            }
-            if (type == long.class) {
-                if (value instanceof Number) return ((Number) value).longValue();
-                return Long.parseLong(value.toString());
-            }
-            if (type == short.class) {
-                if (value instanceof Number) return ((Number) value).shortValue();
-                return Short.parseShort(value.toString());
-            }
-            if (type == byte.class) {
-                if (value instanceof Number) return ((Number) value).byteValue();
-                return Byte.parseByte(value.toString());
-            }
+            if (type == int.class)     return value instanceof Number n ? n.intValue()    : Integer.parseInt(value.toString());
+            if (type == boolean.class) return value instanceof Boolean  ? value           : Boolean.parseBoolean(value.toString());
+            if (type == double.class)  return value instanceof Number n ? n.doubleValue() : Double.parseDouble(value.toString());
+            if (type == float.class)   return value instanceof Number n ? n.floatValue()  : Float.parseFloat(value.toString());
+            if (type == long.class)    return value instanceof Number n ? n.longValue()   : Long.parseLong(value.toString());
+            if (type == short.class)   return value instanceof Number n ? n.shortValue()  : Short.parseShort(value.toString());
+            if (type == byte.class)    return value instanceof Number n ? n.byteValue()   : Byte.parseByte(value.toString());
             return null;
         }
         if (type.isInstance(value)) return value;
         if (type == String.class) return value.toString();
-        if (type == Map.class) {
-            if (value instanceof Map<?, ?>) return value;
-            throw new IllegalArgumentException("Expected Map but got: " + value.getClass());
-        }
+        if (type == Map.class && value instanceof Map<?, ?>) return value;
         if (value instanceof Map<?, ?> rawMap) {
             Map<String, Object> safeMap = new HashMap<>();
             for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
                 if (!(entry.getKey() instanceof String))
-                    throw new IllegalArgumentException("Key is not String: " + entry.getKey());
+                    throw new IllegalArgumentException("Non-string key: " + entry.getKey());
                 safeMap.put(entry.getKey().toString(), entry.getValue());
             }
             return bindObjectFromMap(safeMap, type);
         }
-        throw new IllegalArgumentException("Cannot convert " + value + " (" + value.getClass() + ") to " + type);
+        throw new IllegalArgumentException("Cannot convert " + value.getClass() + " to " + type);
     }
 
+    /**
+     * Reflectively constructs an instance of a specified helper class type and iteratively populates
+     * its declared fields matching properties present inside a raw string key-value attributes map.
+     *
+     * @param <R>  the generic object instance type being assembled
+     * @param map  the raw safe attributes key-value node configuration data source
+     * @param type the target blueprint destination {@link Class} to map down into
+     * @return a completely bound helper object structure
+     * @throws Exception if constructors are inaccessible, or internal property conversions fail
+     */
     private <R> R bindObjectFromMap(Map<String, Object> map, Class<R> type) throws Exception {
-        R instance = type.getDeclaredConstructor().newInstance();
+        R obj = type.getDeclaredConstructor().newInstance();
         for (Field field : type.getDeclaredFields()) {
             field.setAccessible(true);
             Object raw = map.get(field.getName());
-            if (raw == null) continue;
-            field.set(instance, convert(raw, field.getType()));
+            if (raw != null) field.set(obj, convert(raw, field.getType()));
         }
-        return instance;
-    }
-
-    private int getVersion(Map<String, Object> map) {
-        Object version = map.get("config-version");
-        if (version instanceof Number) {
-            return ((Number) version).intValue();
-        }
-        return 0;
-    }
-
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> mergePreservingOrder(Map<String, Object> defaults, Map<String, Object> user) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : user.entrySet()) {
-            String key = entry.getKey();
-            Object userValue = entry.getValue();
-            if (defaults.containsKey(key)) {
-                Object defaultValue = defaults.get(key);
-                if (userValue instanceof Map && defaultValue instanceof Map) {
-                    Map<String, Object> dv = (Map<String, Object>) defaultValue;
-                    Map<String, Object> uv = (Map<String, Object>) userValue;
-                    result.put(key, mergePreservingOrder(dv, uv));
-                } else {
-                    result.put(key, userValue);
-                }
-            } else {
-                result.put(key, userValue);
-            }
-        }
-        for (Map.Entry<String, Object> entry : defaults.entrySet()) {
-            String key = entry.getKey();
-            if (!result.containsKey(key)) {
-                result.put(key, entry.getValue());
-            }
-        }
-        return result;
+        return obj;
     }
 }

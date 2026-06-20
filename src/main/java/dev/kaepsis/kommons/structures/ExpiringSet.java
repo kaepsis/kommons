@@ -7,39 +7,23 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A thread‑safe set where entries automatically expire after a specified time‑to‑live (TTL).
- * <p>
- * {@code ExpiringSet} stores items with an associated expiry timestamp. An item is considered
- * present only if its TTL has not yet elapsed. Expired items are automatically removed both
- * lazily (when checked via {@link #contains(Object)}) and periodically by a background cleanup
- * thread.
- * </p>
- * <p>
- * The TTL is defined in seconds at construction time, and a background daemon thread cleans
- * up expired entries at an interval equal to half the TTL (minimum once per second). The
- * set uses a {@link ConcurrentHashMap} internally, making all operations safe for concurrent
- * access from multiple threads.
- * </p>
- * <p>
- * This class is useful for temporary caches, rate‑limiting, session management, or any
- * scenario where items should be automatically forgotten after a certain period.
- * </p>
- * <p>
- * Example usage:
- * <pre>{@code
- * ExpiringSet<String> set = new ExpiringSet<>(30); // TTL = 30 seconds
- * set.add("player123");
- * System.out.println(set.contains("player123")); // true
- * Thread.sleep(31000);
- * System.out.println(set.contains("player123")); // false (expired)
- * set.shutdown();
- * }</pre>
- * </p>
+ * A thread-safe, set-like data structure where elements automatically expire and
+ * are removed after a configured Time-To-Live (TTL).
+ * * <p>This implementation is backed by a {@link ConcurrentHashMap}. It employs a dual
+ * approach to expiration:
+ * <ul>
+ * <li><b>Passive Expiration:</b> Items are checked and lazily removed during read operations
+ * like {@link #contains(Object)}.</li>
+ * <li><b>Active Expiration:</b> A background daemon thread periodically sweeps the set
+ * to clean up expired entries.</li>
+ * </ul>
+ * * <p>Note: To prevent resource leaks from the background scheduler, ensure that
+ * {@link #shutdown()} is invoked when this data structure is no longer needed.
+ * * @param <T> the type of elements maintained by this set
  *
- * @param <T> the type of elements maintained by this set
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 public class ExpiringSet<T> {
 
@@ -48,18 +32,17 @@ public class ExpiringSet<T> {
     private final ScheduledExecutorService cleaner;
 
     /**
-     * Constructs an expiring set with the specified time‑to‑live in seconds.
+     * Constructs an {@code ExpiringSet} with the specified Time-To-Live (TTL) for its elements.
      * <p>
-     * The TTL is converted to milliseconds internally. A daemon background thread is started
-     * to periodically remove expired entries. The cleanup interval is set to half the TTL
-     * (minimum 1 second).
-     * </p>
+     * Initializes a background daemon thread that runs a cleanup task at a fixed rate.
+     * The cleanup interval is dynamically calculated as half of the TTL, with a minimum
+     * floor of 1 second (1000ms).
      *
-     * @param ttlSeconds the time‑to‑live in seconds (must be positive)
-     * @throws IllegalArgumentException if {@code ttlSeconds <= 0}
+     * @param ttlSeconds the duration in seconds that an item remains valid after being added
+     * @throws IllegalArgumentException if {@code ttlSeconds} is less than or equal to zero
      */
     public ExpiringSet(long ttlSeconds) {
-        if (ttlSeconds <= 0) throw new IllegalArgumentException("ttlMillis cannot be negative");
+        if (ttlSeconds <= 0) throw new IllegalArgumentException("ttlSeconds must be positive");
         this.ttlMillis = ttlSeconds * 1000L;
         this.cleaner = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "ExpiringSet-Cleaner");
@@ -71,33 +54,32 @@ public class ExpiringSet<T> {
     }
 
     /**
-     * Adds the specified element to the set, overwriting any existing entry.
+     * Adds the specified item to the set, setting or resetting its expiration time.
      * <p>
-     * The element will expire after the configured TTL. If the same element already exists,
-     * its expiry time is reset to the current time plus TTL.
-     * </p>
+     * If the item is already present, its expiration time is overwritten/refreshed
+     * to extend its lifespan by the configured TTL from the current system time.
      *
-     * @param item the element to add (may be {@code null})
+     * @param item the element to be added
      */
     public void add(T item) {
         map.put(item, System.currentTimeMillis() + ttlMillis);
     }
 
     /**
-     * Adds the specified element only if it is not already present with a non‑expired entry.
+     * Adds the specified item to the set only if it is not already present and active.
      * <p>
-     * If an expired entry exists, it is effectively absent, so the element will be added.
-     * This method is atomic: the check and insertion are performed as a single operation.
-     * </p>
+     * An item is considered absent if it does not exist in the set, or if it exists
+     * but has already expired based on the current system time. If the existing item
+     * is expired, this method atomically updates its expiration time.
      *
-     * @param item the element to add (may be {@code null})
-     * @return {@code true} if the element was added (i.e., it was absent or expired),
-     *         {@code false} if it was already present and still valid
+     * @param item the element to be added if absent
+     * @return {@code true} if the item was successfully added or its expired lease was refreshed;
+     * {@code false} if a valid, unexpired item already exists in the set
      */
     public boolean addIfAbsent(T item) {
         long now = System.currentTimeMillis();
         long expiry = now + ttlMillis;
-        return map.compute(item, (k, oldExpiry) ->  {
+        return map.compute(item, (_, oldExpiry) ->  {
             if (oldExpiry == null || oldExpiry < now) {
                 return expiry;
             }
@@ -106,14 +88,14 @@ public class ExpiringSet<T> {
     }
 
     /**
-     * Checks whether the specified element is present and has not yet expired.
+     * Checks if the set contains the specified item and guarantees that it is not expired.
      * <p>
-     * If the element exists but its expiry time has passed, it is removed from the set
-     * and this method returns {@code false}.
-     * </p>
+     * This operation performs a passive cleanup: if the item is present but its TTL has
+     * passed, it is immediately removed from the set and this method returns {@code false}.
      *
-     * @param item the element to check (may be {@code null})
-     * @return {@code true} if the element is present and not expired, {@code false} otherwise
+     * @param item the element whose presence in this set is to be tested
+     * @return {@code true} if this set contains the specified element and it has not yet expired;
+     * {@code false} otherwise
      */
     public boolean contains(T item) {
         Long expiry = map.get(item);
@@ -126,38 +108,31 @@ public class ExpiringSet<T> {
     }
 
     /**
-     * Removes the specified element from the set if present.
-     * <p>
-     * This operation is performed regardless of the element's expiration state.
-     * </p>
+     * Explicitly removes the specified item from the set, regardless of whether it has expired or not.
      *
-     * @param item the element to remove (may be {@code null})
+     * @param item the element to be removed
      */
     public void remove(T item) {
         map.remove(item);
     }
 
     /**
-     * Returns a snapshot of the currently non‑expired elements.
+     * Returns an unmodifiable, point-in-time snapshot of all currently active (unexpired)
+     * elements in the set.
      * <p>
-     * This method first performs a cleanup of expired entries and then returns a view
-     * of the remaining keys. The returned set is a snapshot at the time of the call;
-     * subsequent changes to the {@code ExpiringSet} are not reflected in the snapshot.
-     * </p>
+     * This method triggers an immediate, synchronous cleanup of all expired entries before
+     * capturing the snapshot to ensure maximum accuracy.
      *
-     * @return a {@link Set} containing all non‑expired elements (never {@code null})
+     * @return an unmodifiable {@link Set} containing the active items at the time of the call
      */
     public Set<T> snapshot() {
         cleanup();
-        return map.keySet();
+        return Set.copyOf(map.keySet());
     }
 
     /**
-     * Removes all expired entries from the internal map.
-     * <p>
-     * This method is called automatically by the background cleaner thread, but can also
-     * be invoked manually if immediate cleanup is desired.
-     * </p>
+     * Synchronously iterates through the entire map and removes any entries whose
+     * expiration timestamp is strictly less than the current system time.
      */
     private void cleanup() {
         long now = System.currentTimeMillis();
@@ -165,14 +140,11 @@ public class ExpiringSet<T> {
     }
 
     /**
-     * Shuts down the background cleanup executor.
+     * Shuts down the background cleanup scheduler immediately.
      * <p>
-     * After calling this method, no further automatic cleanup will occur. The set can still
-     * be used, but expired entries will only be removed lazily via {@link #contains(Object)}
-     * or manually by calling {@link #cleanup()} (which is private but can be triggered via
-     * {@link #snapshot()}). This method should be called when the set is no longer needed,
-     * especially to avoid keeping the executor alive.
-     * </p>
+     * This method should be called when the set is no longer needed to prevent
+     * thread/resource leaks. Ongoing tasks are interrupted, and scheduled tasks
+     * are cancelled.
      */
     public void shutdown() {
         cleaner.shutdownNow();

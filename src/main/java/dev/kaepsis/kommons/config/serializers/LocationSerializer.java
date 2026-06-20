@@ -1,6 +1,6 @@
 package dev.kaepsis.kommons.config.serializers;
 
-import dev.kaepsis.kommons.config.store.DataStore;
+import dev.kaepsis.kommons.config.core.DataStore;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -38,8 +38,8 @@ import java.util.Objects;
  * </p>
  *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 public class LocationSerializer {
 

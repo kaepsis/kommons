@@ -27,9 +27,10 @@ import java.sql.Connection;
  * </p>
  *
  * @param <T> the return type of the transactional operation
+ *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 @FunctionalInterface
 public interface TransactionFunction<T> {

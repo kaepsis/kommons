@@ -18,9 +18,10 @@ package dev.kaepsis.kommons.database.interfaces;
  * </p>
  *
  * @param <T> the type of the result supplied
+ *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 @FunctionalInterface
 public interface SupplierWithException<T> {

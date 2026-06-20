@@ -31,8 +31,8 @@ import java.util.Locale;
  * </p>
  *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 public final class Time {
 
@@ -55,20 +55,15 @@ public final class Time {
      * @throws IllegalArgumentException if {@code millis} is negative
      */
     public static String formatDuration(long millis) {
-        if (millis < 0) {
-            throw new IllegalArgumentException("La durata non può essere negativa: " + millis);
-        }
-        long seconds = millis / 1000;
+        long seconds = validateAndToSeconds(millis);
         long hours = seconds / 3600;
         seconds %= 3600;
         long minutes = seconds / 60;
         seconds %= 60;
-
-        StringBuilder sb = new StringBuilder(16);
-        return getString(seconds, hours, minutes, sb);
+        return formatHMS(seconds, hours, minutes, new StringBuilder(16));
     }
 
-    private static String getString(long seconds, long hours, long minutes, StringBuilder sb) {
+    private static String formatHMS(long seconds, long hours, long minutes, StringBuilder sb) {
         if (hours > 0) sb.append(hours).append("h ");
         if (minutes > 0) sb.append(minutes).append("m ");
         if (seconds > 0 || sb.isEmpty()) sb.append(seconds).append("s");
@@ -98,11 +93,11 @@ public final class Time {
      */
     public static Duration parseDuration(String input) {
         if (input == null || input.isEmpty()) {
-            throw new IllegalArgumentException("Input nullo o vuoto");
+            throw new IllegalArgumentException("Input null or empty");
         }
         input = input.trim().toLowerCase(Locale.ROOT);
         if (input.length() < 2) {
-            throw new IllegalArgumentException("Formato troppo corto: " + input);
+            throw new IllegalArgumentException("Format too short: " + input);
         }
         char unit = input.charAt(input.length() - 1);
         long amount = getAmount(input);
@@ -112,25 +107,25 @@ public final class Time {
             case 'h' -> Duration.ofHours(amount);
             case 'd' -> Duration.ofDays(amount);
             case 'w' -> Duration.ofDays(amount * 7);
-            default -> throw new IllegalArgumentException("Unità sconosciuta: '" + unit + "'");
+            default -> throw new IllegalArgumentException("Unknown time unit: '" + unit + "'");
         };
     }
 
     private static long getAmount(String input) {
         String numberPart = input.substring(0, input.length() - 1).trim();
         if (numberPart.isEmpty()) {
-            throw new IllegalArgumentException("Manca la parte numerica in: " + input);
+            throw new IllegalArgumentException("Numeric part missing in: " + input);
         }
 
         long amount;
         try {
             amount = Long.parseLong(numberPart);
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Numero non valido: " + numberPart, e);
+            throw new IllegalArgumentException("Invalid number: " + numberPart, e);
         }
 
         if (amount < 0) {
-            throw new IllegalArgumentException("La quantità non può essere negativa: " + amount);
+            throw new IllegalArgumentException("Quantity must be positive: " + amount);
         }
         return amount;
     }
@@ -187,19 +182,21 @@ public final class Time {
      * @throws IllegalArgumentException if {@code millis} is negative
      */
     public static String toMinecraftString(long millis) {
-        if (millis < 0) {
-            throw new IllegalArgumentException("La durata non può essere negativa: " + millis);
-        }
-        long seconds = millis / 1000;
+        long seconds = validateAndToSeconds(millis);
         long days = seconds / 86400;
         seconds %= 86400;
         long hours = seconds / 3600;
         seconds %= 3600;
         long minutes = seconds / 60;
         seconds %= 60;
-
         StringBuilder sb = new StringBuilder();
         if (days > 0) sb.append(days).append("d ");
-        return getString(seconds, hours, minutes, sb);
+        return formatHMS(seconds, hours, minutes, sb);
     }
+
+    private static long validateAndToSeconds(long millis) {
+        if (millis < 0) throw new IllegalArgumentException("Duration must be positive: " + millis);
+        return millis / 1000;
+    }
+
 }

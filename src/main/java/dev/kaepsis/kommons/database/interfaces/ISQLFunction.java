@@ -23,9 +23,10 @@ import java.sql.SQLException;
  *
  * @param <T> the function input type
  * @param <R> the function result type
+ *
  * @author Kaepsis
- * @version 260515
- * @since 260514
+ * @version 1.0.0
+ * @since 1.0.0
  */
 @FunctionalInterface
 public interface ISQLFunction<T, R> {
