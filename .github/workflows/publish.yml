@@ -19,7 +19,7 @@ jobs:
           distribution: 'temurin'
 
       - name: Publish with Gradle
-        run: bash ./gradlew publishAllPublicationsToCentralPortal
+        run: sed -i 's/\r$//' gradlew && chmod +x gradlew && ./gradlew publishAllPublicationsToCentralPortal
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
